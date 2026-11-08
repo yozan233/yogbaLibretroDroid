@@ -24,6 +24,25 @@
 
 namespace libretrodroid {
 
+ImmersiveMode::~ImmersiveMode() {
+    for (auto& framebuffer : blurFramebuffers) {
+        ES3Utils::deleteFramebuffer(std::move(framebuffer));
+    }
+    blurFramebuffers.clear();
+    if (blurShaderProgram != 0) {
+        glDeleteProgram(blurShaderProgram);
+        blurShaderProgram = 0;
+    }
+    if (displayShaderProgram != 0) {
+        glDeleteProgram(displayShaderProgram);
+        displayShaderProgram = 0;
+    }
+    if (blendShaderProgram != 0) {
+        glDeleteProgram(blendShaderProgram);
+        blendShaderProgram = 0;
+    }
+}
+
 void ImmersiveMode::initializeShaders() {
     if (blendShaderProgram != 0) return;
 

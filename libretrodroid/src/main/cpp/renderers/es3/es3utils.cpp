@@ -101,7 +101,9 @@ std::unique_ptr<ES3Utils::Framebuffers> ES3Utils::buildShaderPasses(
     auto result = std::make_unique<std::vector<std::unique_ptr<ES3Utils::Framebuffer>>>();
     auto passes = shaders.passes;
 
-    for (int i = 0; i < passes.size() - 1; ++i) {
+    // An invalid external shader can leave the renderer with no active passes.
+    // Avoid unsigned underflow from `size() - 1` and keep the renderer alive.
+    for (size_t i = 0; i + 1 < passes.size(); ++i) {
         auto pass = passes[i];
         unsigned int passWidth = std::lround(width * pass.scale);
         unsigned int passHeight = std::lround(height * pass.scale);

@@ -26,18 +26,39 @@ namespace libretrodroid {
 
 class ShaderManager {
 public:
+    struct AuxiliaryTexture {
+        unsigned int width;
+        unsigned int height;
+        std::vector<unsigned char> rgba8888;
+
+        bool operator==(const AuxiliaryTexture &other) const {
+            return width == other.width &&
+                   height == other.height &&
+                   rgba8888 == other.rgba8888;
+        }
+    };
+
     struct Pass {
         std::string vertex;
         std::string fragment;
         bool linear;
         float scale;
+        // Nearest custom passes that render directly to the viewport need the
+        // same texel-boundary bias used by the default fragment shader.
+        bool textureCoordinateBias = false;
 
         bool operator==(const ShaderManager::Pass &other) const;
     };
 
     struct Chain {
         std::vector<Pass> passes;
-        bool linearTexture;
+        bool linearTexture = false;
+        // Legacy XML shaders loaded by CMOf sample the source texture with
+        // GL_REPEAT semantics. Keep this separate from intermediate passes,
+        // which remain clamped just like CMOf's output framebuffer.
+        bool repeatSourceTexture = false;
+        unsigned int historyCount = 0;
+        std::vector<AuxiliaryTexture> auxiliaryTextures;
 
         bool operator==(const ShaderManager::Chain &other) const;
         bool operator!=(const ShaderManager::Chain &other) const;
@@ -51,14 +72,18 @@ public:
         SHADER_UPSCALE_CUT = 4,
         SHADER_UPSCALE_CUT2 = 5,
         SHADER_UPSCALE_CUT3 = 6,
+        SHADER_CUSTOM = 7,
     };
 
     struct Config {
         Type type;
         std::unordered_map<std::string, std::string> params;
+        std::vector<AuxiliaryTexture> auxiliaryTextures;
 
-        inline bool operator==(const Config& other) {
-            return type == other.type && params == other.params;
+        inline bool operator==(const Config& other) const {
+            return type == other.type &&
+                   params == other.params &&
+                   auxiliaryTextures == other.auxiliaryTextures;
         }
     };
 
@@ -66,9 +91,11 @@ private:
     static const std::string defaultShaderVertex;
 
     static const std::string defaultShaderFragment;
-    static const std::string defaultSharpFragment;
+    static const std::string sharpFragment;
     static const std::string crtShaderFragment;
     static const std::string lcdShaderFragment;
+    static const std::string passOutputFragment;
+    static const std::string customPassOutputFragment;
 
     static const std::unordered_map<std::string, std::string> cutUpscaleParams;
     static const std::string cutUpscaleVertex;

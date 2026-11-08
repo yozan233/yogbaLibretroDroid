@@ -37,6 +37,16 @@ FramebufferRenderer::FramebufferRenderer(
     initializeBuffers();
 }
 
+FramebufferRenderer::~FramebufferRenderer() {
+    if (framebuffers) {
+        for (auto& passFramebuffer : *framebuffers) {
+            ES3Utils::deleteFramebuffer(std::move(passFramebuffer));
+        }
+        framebuffers->clear();
+    }
+    ES3Utils::deleteFramebuffer(std::move(framebuffer));
+}
+
 void FramebufferRenderer::onNewFrame(const void *data, unsigned width, unsigned height, size_t pitch) {
     Renderer::onNewFrame(data, width, height, pitch);
 
@@ -47,7 +57,11 @@ void FramebufferRenderer::onNewFrame(const void *data, unsigned width, unsigned 
 }
 
 void FramebufferRenderer::initializeBuffers() {
+    for (auto& item : *framebuffers) {
+        ES3Utils::deleteFramebuffer(std::move(item));
+    }
     framebuffers = ES3Utils::buildShaderPasses(width, height, shaders);
+    textureSize = std::make_pair(width, height);
 
     ES3Utils::deleteFramebuffer(std::move(framebuffer));
     framebuffer = ES3Utils::createFramebuffer(
@@ -58,6 +72,15 @@ void FramebufferRenderer::initializeBuffers() {
         depth,
         stencil
     );
+
+    if (shaders.repeatSourceTexture) {
+        // ES3Utils' repeat flag means MIRRORED_REPEAT for immersive-mode
+        // buffers. CMOf custom shaders require ordinary GL_REPEAT instead.
+        glBindTexture(GL_TEXTURE_2D, framebuffer->texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
 }
 
 uintptr_t FramebufferRenderer::getTexture() {

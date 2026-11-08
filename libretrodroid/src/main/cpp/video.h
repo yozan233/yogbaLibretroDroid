@@ -21,6 +21,7 @@
 #include <GLES2/gl2.h>
 #include <optional>
 #include <array>
+#include <memory>
 
 #include "renderers/renderer.h"
 #include "shadermanager.h"
@@ -51,6 +52,12 @@ public:
         GLint gPreviousPassTextureHandle = 0;
         GLint gScreenDensityHandle = 0;
         GLint gTextureSizeHandle = 0;
+        GLint gLegacyTextureSizeHandle = -1;
+        GLint gInputSizeHandle = -1;
+        GLint gOutputSizeHandle = -1;
+        GLint gHistoryTexturesHandle = -1;
+        GLint gAuxiliaryTexturesHandle = -1;
+        bool textureCoordinateBias = false;
     };
 
     Video(
@@ -61,16 +68,15 @@ public:
         bool skipDuplicateFrames,
         bool immersiveMode,
         Rect viewportRect,
-        ImmersiveMode::Config immersiveModeConfig,
-        unsigned int viewportAlignment
+        ImmersiveMode::Config immersiveModeConfig
     );
+    ~Video();
 
     VideoLayout& getLayout() { return videoLayout; }
 
     void updateAspectRatio(float aspectRatio);
     void updateScreenSize(unsigned screenWidth, unsigned screenHeight);
     void updateViewportSize(Rect viewportRect);
-    void updateViewportAlignment(unsigned int viewportAlignment);
     void updateRendererSize(unsigned width, unsigned height);
     void updateRotation(float rotation);
     void updateShaderType(ShaderManager::Config shaderConfig);
@@ -89,6 +95,10 @@ public:
 
 private:
     void updateProgram();
+    void releaseCustomTextures();
+    void createAuxiliaryTextures(const ShaderManager::Chain& shaders, unsigned int maxCount);
+    void ensureHistoryTextures(unsigned int count);
+    void captureCurrentFrameToHistory();
 
     float getScreenDensity();
     float getTextureWidth();
@@ -106,12 +116,24 @@ private:
     bool skipDuplicateFrames = false;
 
     std::vector<ShaderChainEntry> shadersChain;
+    ShaderManager::Chain activeShaders;
+
+    std::vector<GLuint> historyTextures;
+    std::vector<GLuint> auxiliaryTextures;
+    GLuint historyReadFramebuffer = 0;
+    GLuint historyCopyProgram = 0;
+    GLint historyCopyPositionHandle = -1;
+    GLint historyCopyCoordinateHandle = -1;
+    GLint historyCopyTextureHandle = -1;
+    size_t historyWriteIndex = 0;
+    std::pair<int, int> historyTextureSize = {0, 0};
+    unsigned int activeHistoryCount = 0;
 
     bool immersiveModeEnabled = false;
     ImmersiveMode immersiveMode;
     VideoLayout videoLayout;
 
-    Renderer* renderer;
+    std::unique_ptr<Renderer> renderer;
 };
 
 }

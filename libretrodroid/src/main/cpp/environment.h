@@ -32,6 +32,22 @@
 #include "log.h"
 #include "rumblestate.h"
 
+typedef int (*retro_link_exchange_fn)(unsigned type,int* args,uint16_t* data);
+
+struct retro_link_exchange_interface {
+    retro_link_exchange_fn exchange;
+};
+
+/*
+ * 自定义 Environment 命令
+ *
+ * 使用 EXPERIMENTAL 标志位，编号从 100 开始避免与官方命令冲突。
+ * Android 前端需要识别这些命令。
+ */
+/** const struct retro_link_exchange_interface* --
+ * 注册数据交换回调。设为 NULL 取消注册。 */
+#define RETRO_ENVIRONMENT_SET_LINK_EXCHANGE_CALLBACK (100 | RETRO_ENVIRONMENT_EXPERIMENTAL)
+
 class Environment {
 public:
     static Environment& getInstance()
@@ -43,6 +59,7 @@ public:
     void operator=(Environment const&) = delete;
 
     static void callback_retro_log(enum retro_log_level level, const char *fmt, ...);
+    static int callback_link_exchange(unsigned type,int *args,uint16_t *data);
 
     static bool callback_set_rumble_state(
         unsigned port,
@@ -67,6 +84,12 @@ public:
 
     void deinitialize();
 
+    // GL-thread-only, scoped override while loading a rollback BIOS.
+    std::string exchangeSystemDirectory(std::string directory) {
+        systemDirectory.swap(directory);
+        return directory;
+    }
+
     void updateVariable(const std::string &key, const std::string &value);
 
     void setLanguage(const std::string &androidLanguage);
@@ -86,6 +109,8 @@ public:
 
     struct retro_disk_control_callback* getRetroDiskControlCallback() const;
 
+    const struct retro_memory_descriptor* getMemoryDescriptor(unsigned base);
+
     int getPixelFormat() const;
     bool isUseHwAcceleration() const;
     bool isUseDepth() const;
@@ -101,6 +126,9 @@ public:
     float getGameGeometryAspectRatio() const;
     bool isGameGeometryUpdated() const;
     void clearGameGeometryUpdated();
+
+    bool isSaveDataSynced();
+    void resetSaveDataSynced();
 
     std::array<libretrodroid::RumbleState, 4> & getLastRumbleStates();
 
@@ -120,6 +148,7 @@ private:
     retro_hw_context_reset_t hw_context_reset = nullptr;
     retro_hw_context_reset_t hw_context_destroy = nullptr;
     struct retro_disk_control_callback *retro_disk_control_callback = nullptr;
+    struct retro_memory_map *memory_map = nullptr;
 
     std::string savesDirectory;
     std::string systemDirectory;
@@ -133,6 +162,7 @@ private:
     bool useDepth = false;
     bool useStencil = false;
     bool bottomLeftOrigin = false;
+    bool supportAchievements = false;
 
     float screenRotation = 0;
     bool screenRotationUpdated = false;
@@ -141,6 +171,8 @@ private:
     unsigned gameGeometryWidth = 0;
     unsigned gameGeometryHeight = 0;
     float gameGeometryAspectRatio = -1.0f;
+
+    bool saveDataSynced = false;
 
     std::array<libretrodroid::RumbleState, 4> rumbleStates;
 

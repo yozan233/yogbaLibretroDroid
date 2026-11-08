@@ -34,6 +34,7 @@ namespace libretrodroid {
 class ImageRendererES3: public Renderer {
 public:
     explicit ImageRendererES3();
+    ~ImageRendererES3() override;
     uintptr_t getTexture() override;
     uintptr_t getFramebuffer() override;
     void onNewFrame(const void *data, unsigned width, unsigned height, size_t pitch) override;

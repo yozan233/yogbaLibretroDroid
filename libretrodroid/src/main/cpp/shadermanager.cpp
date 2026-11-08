@@ -54,8 +54,36 @@ const std::string ShaderManager::defaultShaderFragment =
     "uniform lowp sampler2D texture;\n"
     "varying HIGHP vec2 coords;\n"
     "void main() {\n"
-    "  lowp vec4 tex = texture2D(texture, coords);"
+    "  lowp vec4 tex = texture2D(texture, coords + vec2(0.0001));"
     "  gl_FragColor = vec4(tex.rgb, 1.0);\n"
+    "}\n";
+
+const std::string ShaderManager::passOutputFragment =
+    "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
+    "#define HIGHP highp\n"
+    "#else\n"
+    "#define HIGHP mediump\n"
+    "precision mediump float;\n"
+    "#endif\n"
+    "\n"
+    "uniform lowp sampler2D previousPass;\n"
+    "varying HIGHP vec2 coords;\n"
+    "void main() {\n"
+    "  gl_FragColor = texture2D(previousPass, coords + vec2(0.0001));\n"
+    "}\n";
+
+const std::string ShaderManager::customPassOutputFragment =
+    "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
+    "#define HIGHP highp\n"
+    "#else\n"
+    "#define HIGHP mediump\n"
+    "precision mediump float;\n"
+    "#endif\n"
+    "\n"
+    "uniform lowp sampler2D previousPass;\n"
+    "varying HIGHP vec2 coords;\n"
+    "void main() {\n"
+    "  gl_FragColor = texture2D(previousPass, coords);\n"
     "}\n";
 
 const std::string ShaderManager::crtShaderFragment =
@@ -77,14 +105,11 @@ const std::string ShaderManager::crtShaderFragment =
     "#define BRIGHTBOOST 0.30\n"
     "\n"
     "void main() {\n"
-    "  lowp vec3 texel = texture2D(texture, coords).rgb;\n"
+    "  lowp vec3 texel = texture2D(texture, coords + vec2(0.0001)).rgb;\n"
     "  lowp vec3 pixelHigh = ((1.0 + BRIGHTBOOST) - (0.2 * texel)) * texel;\n"
     "  lowp vec3 pixelLow  = ((1.0 - INTENSITY) + (0.1 * texel)) * texel;\n"
-    "\n"
     "  HIGHP vec2 coords = fract(screenCoords) * 2.0 - vec2(1.0);\n"
-    "\n"
     "  lowp float mask = 1.0 - abs(coords.y);\n"
-    "\n"
     "  gl_FragColor = vec4(mix(texel, mix(pixelLow, pixelHigh, mask), screenMaskStrength), 1.0);\n"
     "}\n";
 
@@ -125,7 +150,7 @@ const std::string ShaderManager::lcdShaderFragment =
     "  gl_FragColor = vec4(mix(texel, mix(pixelLow, pixelHigh, mask), screenMaskStrength), 1.0);\n"
     "}\n";
 
-const std::string ShaderManager::defaultSharpFragment =
+const std::string ShaderManager::sharpFragment =
     "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
     "#define HIGHP highp\n"
     "#else\n"
@@ -1530,11 +1555,11 @@ const std::string ShaderManager::cut3UpscalePass2Fragment =
 ShaderManager::Chain ShaderManager::getShader(const ShaderManager::Config& config) {
     switch (config.type) {
     case Type::SHADER_DEFAULT: {
-        return { { { defaultShaderVertex, defaultShaderFragment, true, 1.0 } }, true };
+        return { { { defaultShaderVertex, defaultShaderFragment, false, 1.0 } }, false };
     }
 
     case Type::SHADER_CRT: {
-        return { { { defaultShaderVertex, crtShaderFragment, true, 1.0 } } , true };
+        return { { { defaultShaderVertex, crtShaderFragment, false, 1.0 } } , false };
     }
 
     case Type::SHADER_LCD: {
@@ -1542,7 +1567,7 @@ ShaderManager::Chain ShaderManager::getShader(const ShaderManager::Config& confi
     }
 
     case Type::SHADER_SHARP: {
-        return { { { defaultShaderVertex, defaultSharpFragment, true, 1.0 } }, true };
+        return { { { defaultShaderVertex, sharpFragment, true, 1.0 } }, true };
     }
 
     case Type::SHADER_UPSCALE_CUT: {
@@ -1602,6 +1627,78 @@ ShaderManager::Chain ShaderManager::getShader(const ShaderManager::Config& confi
             false
         };
     }
+
+    case Type::SHADER_CUSTOM: {
+        auto itVertex   = config.params.find("VERTEX");
+        auto itFragment = config.params.find("FRAGMENT");
+        auto itLinear   = config.params.find("LINEAR_TEXTURE");
+        auto itScale = config.params.find("SCALE");
+        auto itUseIntermediateFramebuffer =
+            config.params.find("USE_INTERMEDIATE_FRAMEBUFFER");
+        auto itRepeat = config.params.find("REPEAT_SOURCE_TEXTURE");
+        auto itHistory = config.params.find("HISTORY_COUNT");
+
+        bool linear = itLinear != config.params.end() && itLinear->second == "1";
+        bool repeatSourceTexture =
+            itRepeat != config.params.end() && itRepeat->second == "1";
+        unsigned int historyCount = 0;
+        if (itHistory != config.params.end()) {
+            try {
+                historyCount = static_cast<unsigned int>(std::max(0, std::stoi(itHistory->second)));
+            } catch (const std::exception&) {
+                historyCount = 0;
+            }
+        }
+        float scale = 1.0f;
+        if (itScale != config.params.end()) {
+            scale = std::stof(itScale->second);
+        }
+        // Preserve the old SCALE behavior for callers that construct GLRetroShader
+        // parameters directly and do not yet send the new explicit flag.
+        bool useIntermediateFramebuffer =
+            itUseIntermediateFramebuffer != config.params.end()
+            ? itUseIntermediateFramebuffer->second == "1"
+            : scale != 1.0f;
+
+        std::vector<ShaderManager::Pass> passes;
+
+        // 缺少必要参数时回退到默认着色器
+        if (itVertex == config.params.end() || itFragment == config.params.end()) {
+            passes.push_back({ defaultShaderVertex, defaultShaderFragment, linear, scale });
+        } else {
+            passes.push_back({
+                itVertex->second,
+                itFragment->second,
+                linear,
+                scale,
+                !useIntermediateFramebuffer && !linear
+            });
+        }
+
+        // CMOf only creates an intermediate framebuffer when the shader XML explicitly
+        // supplies both output_width and output_height. Filters without those attributes
+        // must execute at the final viewport size (for example scanlines and 4k BRm).
+        // A tiny positive bias keeps nearest sampling away from implementation-dependent
+        // texel boundaries during non-integer final scaling. Linear output uses exact
+        // coordinates to avoid an unnecessary subpixel shift.
+        if (useIntermediateFramebuffer) {
+            passes.push_back({
+                defaultShaderVertex,
+                linear ? customPassOutputFragment : passOutputFragment,
+                linear,
+                1.0f
+            });
+        }
+
+        return {
+            passes,
+            linear,
+            repeatSourceTexture,
+            historyCount,
+            config.auxiliaryTextures
+        };
+    }
+
 }
 }
 
@@ -1620,7 +1717,11 @@ std::string ShaderManager::buildDefines(
 }
 
 bool ShaderManager::Chain::operator==(const ShaderManager::Chain &other) const {
-    return this->passes == other.passes && this->linearTexture == other.linearTexture;
+    return this->passes == other.passes &&
+           this->linearTexture == other.linearTexture &&
+           this->repeatSourceTexture == other.repeatSourceTexture &&
+           this->historyCount == other.historyCount &&
+           this->auxiliaryTextures == other.auxiliaryTextures;
 }
 
 bool ShaderManager::Chain::operator!=(const ShaderManager::Chain &other) const {
@@ -1629,6 +1730,7 @@ bool ShaderManager::Chain::operator!=(const ShaderManager::Chain &other) const {
 
 bool ShaderManager::Pass::operator==(const ShaderManager::Pass &other) const {
     return this->linear == other.linear && this->scale == other.scale &&
+           this->textureCoordinateBias == other.textureCoordinateBias &&
            this->vertex == other.vertex && this->fragment == other.fragment;
 }
 } //namespace libretrodroid

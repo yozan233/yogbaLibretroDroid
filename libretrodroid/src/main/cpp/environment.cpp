@@ -30,6 +30,7 @@
 #include "environment.h"
 #include "vfs/vfs.h"
 #include "microphone/microphoneinterface.h"
+#include "libretrodroid.h"
 
 void Environment::initialize(
     const std::string &requiredSystemDirectory,
@@ -45,6 +46,12 @@ void Environment::deinitialize() {
     callback_get_current_framebuffer = nullptr;
     hw_context_reset = nullptr;
     hw_context_destroy = nullptr;
+
+    if (memory_map) {
+        delete[] memory_map->descriptors;
+        delete memory_map;
+        memory_map = nullptr;
+    }
 
     retro_disk_control_callback = nullptr;
 
@@ -65,6 +72,10 @@ void Environment::deinitialize() {
     gameGeometryAspectRatio = -1.0f;
 
     rumbleStates.fill(libretrodroid::RumbleState {});
+    variables.clear();
+    dirtyVariables = false;
+    controllers.clear();
+    saveDataSynced = false;
 }
 
 void Environment::updateVariable(const std::string& key, const std::string& value) {
@@ -178,9 +189,34 @@ bool Environment::environment_handle_get_microphone_interface(struct retro_micro
     return true;
 }
 
+int Environment::callback_link_exchange(unsigned type,int* args,uint16_t* data) {
+    return libretrodroid::LibretroDroid::getInstance().handleLinkExchange(type, args, data);
+}
+
+const struct retro_memory_descriptor* Environment::getMemoryDescriptor(unsigned base) {
+    if (memory_map){
+        unsigned num = memory_map->num_descriptors;
+        for (unsigned i = 0; i < num; ++i) {
+            if (memory_map->descriptors[i].start == base){
+                return &memory_map->descriptors[i];
+            }
+        }
+    }
+    return nullptr;
+}
+
+
 void Environment::callback_retro_log(enum retro_log_level level, const char *fmt, ...) {
     va_list argptr;
     va_start(argptr, fmt);
+
+    if (level == 4) {
+        LOGI("%s: %s %s", MODULE_NAME_CORE, "Notice", fmt);
+        if (strcmp(fmt, "Savedata synced") == 0) {
+            Environment::getInstance().saveDataSynced = true;
+        }
+        return;
+    }
 
     switch (level) {
 #if VERBOSE_LOGGING
@@ -335,6 +371,34 @@ bool Environment::handle_callback_environment(unsigned cmd, void *data) {
             LOGD("Called RETRO_ENVIRONMENT_GET_MICROPHONE_INTERFACE");
             return environment_handle_get_microphone_interface(static_cast<struct retro_microphone_interface*>(data));
 
+        case RETRO_ENVIRONMENT_SET_LINK_EXCHANGE_CALLBACK: {
+            struct retro_link_exchange_interface *linkExchange = static_cast<struct retro_link_exchange_interface *>(data);
+            linkExchange->exchange = &callback_link_exchange;
+            /* LINK_DIAGNOSTIC_DISABLED: LOGI("[GbaLink] core registered link exchange callback") */;
+            return true;
+        }
+
+        case RETRO_ENVIRONMENT_SET_MEMORY_MAPS: {
+            struct retro_memory_map* src = static_cast<struct retro_memory_map *>(data);
+            auto* descs = new retro_memory_descriptor[src->num_descriptors];
+
+            memcpy(descs,src->descriptors,sizeof(retro_memory_descriptor) * src->num_descriptors);
+
+            memory_map = new retro_memory_map{
+                    .descriptors = descs,
+                    .num_descriptors = src->num_descriptors,
+            };
+
+            return true;
+        }
+
+        case RETRO_ENVIRONMENT_SET_SUPPORT_ACHIEVEMENTS: {
+            //bool yes = true;
+            //environCallback(RETRO_ENVIRONMENT_SET_SUPPORT_ACHIEVEMENTS, &yes);
+            supportAchievements = *((bool*) data);
+            return true;
+        }
+
         default:
             LOGD("callback environment has been called: %u", cmd);
             return false;
@@ -479,4 +543,12 @@ void Environment::setEnableVirtualFileSystem(bool value) {
 
 void Environment::setEnableMicrophone(bool value) {
     this->enableMicrophone = value;
+}
+
+bool Environment::isSaveDataSynced() {
+    return saveDataSynced;
+}
+
+void Environment::resetSaveDataSynced() {
+    saveDataSynced = false;
 }

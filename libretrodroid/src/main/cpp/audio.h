@@ -19,6 +19,9 @@
 #define LIBRETRODROID_AUDIO_H
 
 #include <array>
+#include <atomic>
+#include <cstdint>
+#include <mutex>
 #include <unistd.h>
 #include <oboe/Oboe.h>
 #include <oboe/FifoBuffer.h>
@@ -43,6 +46,9 @@ public:
 
     void start();
     void stop();
+    bool resetForContent(int32_t sampleRate, double refreshRate);
+    void resetBuffer();
+    void setNetworkJitterBuffering(bool enabled);
 
     oboe::DataCallbackResult onAudioReady(
         oboe::AudioStream *oboeStream,
@@ -77,7 +83,8 @@ private:
     oboe::ManagedStream stream = nullptr;
     std::unique_ptr<oboe::LatencyTuner> latencyTuner = nullptr;
 
-    bool startRequested = false;
+    std::atomic<bool> startRequested {false};
+    std::mutex streamStateMutex;
     int32_t inputSampleRate;
     double contentRefreshRate = 60.0;
 
@@ -85,8 +92,14 @@ private:
 
     double framesToSubmit = 0.0;
     double errorIntegral = 0.0;
+    bool audioUnderrunActive = true;
 
-    double playbackSpeed = 1.0;
+    std::atomic<double> playbackSpeed {1.0};
+    std::atomic<bool> bufferResetRequested {false};
+    std::atomic<bool> networkJitterBuffering {false};
+    std::atomic<uint32_t> audioCallbackCount {0};
+    std::atomic<uint32_t> audioUnderrunCount {0};
+    std::atomic<uint32_t> audioOverflowCount {0};
 
     std::unique_ptr<AudioLatencySettings> audioLatencySettings;
 };

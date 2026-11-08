@@ -89,8 +89,12 @@ add_library(libretrodroid SHARED
         ${LIBRETRO_COMMON}
 )
 
-# Support 16k pages for Android 15
-target_link_options(libretrodroid PRIVATE "-Wl,-z,max-page-size=16384")
+# Support 16k pages for Android 15.
+# common-page-size affects RELRO/page rounding checks, while max-page-size controls segment alignment.
+target_link_options(libretrodroid PRIVATE
+        "-Wl,-z,max-page-size=16384"
+        "-Wl,-z,common-page-size=16384"
+)
 
 # add lib dependencies
 target_link_libraries(libretrodroid

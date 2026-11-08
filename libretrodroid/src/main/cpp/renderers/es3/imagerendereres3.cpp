@@ -26,6 +26,19 @@ ImageRendererES3::ImageRendererES3() {
     glBindTexture(GL_TEXTURE_2D, currentTexture);
 }
 
+ImageRendererES3::~ImageRendererES3() {
+    if (framebuffers) {
+        for (auto& framebuffer : *framebuffers) {
+            ES3Utils::deleteFramebuffer(std::move(framebuffer));
+        }
+        framebuffers->clear();
+    }
+    if (currentTexture != 0) {
+        glDeleteTextures(1, &currentTexture);
+        currentTexture = 0;
+    }
+}
+
 void ImageRendererES3::onNewFrame(const void *data, unsigned width, unsigned height, size_t pitch) {
     if (pixelFormat == RETRO_PIXEL_FORMAT_0RGB1555) {
         convertDataFrom0RGB1555(data, width, height, pitch);
@@ -38,11 +51,19 @@ void ImageRendererES3::onNewFrame(const void *data, unsigned width, unsigned hei
     glBindTexture(GL_TEXTURE_2D, currentTexture);
 
     glPixelStorei(GL_UNPACK_ALIGNMENT, bytesPerPixel);
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, pitch / bytesPerPixel);
-
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, glFormat, glType, data);
-
+    /* Keep the default row layout. GL_UNPACK_ROW_LENGTH has triggered unstable
+     * vendor upload paths with padded RGB565 framebuffers on some devices. */
     glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    const size_t packedPitch = static_cast<size_t>(width) * bytesPerPixel;
+    if (pitch == packedPitch) {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, glFormat, glType, data);
+    } else {
+        const auto* row = static_cast<const uint8_t*>(data);
+        for (unsigned int y = 0; y < height; ++y) {
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, y, width, 1, glFormat, glType,
+                            row + static_cast<size_t>(y) * pitch);
+        }
+    }
 
     glBindTexture(GL_TEXTURE_2D, 0);
 
@@ -56,11 +77,20 @@ void ImageRendererES3::initializeTextures(unsigned int width, unsigned int heigh
     framebuffers = libretrodroid::ES3Utils::buildShaderPasses(width, height, shaders);
 
     glBindTexture(GL_TEXTURE_2D, currentTexture);
+    textureSize = std::make_pair(width, height);
     glTexImage2D(GL_TEXTURE_2D, 0, glInternalFormat, width, height, 0, glFormat, glType, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, shaders.linearTexture ? GL_LINEAR : GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, shaders.linearTexture ? GL_LINEAR : GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(
+        GL_TEXTURE_2D,
+        GL_TEXTURE_WRAP_S,
+        shaders.repeatSourceTexture ? GL_REPEAT : GL_CLAMP_TO_EDGE
+    );
+    glTexParameteri(
+        GL_TEXTURE_2D,
+        GL_TEXTURE_WRAP_T,
+        shaders.repeatSourceTexture ? GL_REPEAT : GL_CLAMP_TO_EDGE
+    );
 
     if (swapRedAndBlueChannels) {
         applyGLSwizzle(GL_BLUE, GL_GREEN, GL_RED, GL_ALPHA);

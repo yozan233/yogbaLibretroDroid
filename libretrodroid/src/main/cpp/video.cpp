@@ -20,8 +20,11 @@
 #include <cstdlib>
 #include <string>
 #include <cmath>
+#include <algorithm>
+#include <numeric>
 #include <utility>
 #include <sstream>
+#include <cctype>
 
 #include "log.h"
 
@@ -37,7 +40,46 @@ static void printGLString(const char *name, GLenum s) {
     LOGI("GL %s = %s\n", name, v);
 }
 
+static GLint getAttribLocationWithFallback(
+    GLuint program,
+    const char* primary,
+    const char* fallback,
+    const char* legacy = nullptr
+) {
+    GLint handle = glGetAttribLocation(program, primary);
+    if (handle == -1 && fallback != nullptr) {
+        handle = glGetAttribLocation(program, fallback);
+    }
+    if (handle == -1 && legacy != nullptr) {
+        handle = glGetAttribLocation(program, legacy);
+    }
+    return handle;
+}
+
+static GLint getUniformLocationWithFallback(
+    GLuint program,
+    const char* primary,
+    const char* fallback,
+    const char* legacy = nullptr
+) {
+    GLint handle = glGetUniformLocation(program, primary);
+    if (handle == -1 && fallback != nullptr) {
+        handle = glGetUniformLocation(program, fallback);
+    }
+    if (handle == -1 && legacy != nullptr) {
+        handle = glGetUniformLocation(program, legacy);
+    }
+    return handle;
+}
+
 GLuint loadShader(GLenum shaderType, const char* pSource) {
+    // Some Adreno drivers only recognize #version when it is the first byte,
+    // even though GLSL permits leading whitespace. XML CDATA commonly starts
+    // with a newline, so normalize the source before compiling.
+    while (*pSource != '\0' && std::isspace(static_cast<unsigned char>(*pSource))) {
+        ++pSource;
+    }
+
     GLuint shader = glCreateShader(shaderType);
     if (shader) {
         glShaderSource(shader, 1, &pSource, nullptr);
@@ -55,9 +97,9 @@ GLuint loadShader(GLenum shaderType, const char* pSource) {
                          shaderType, buf);
                     free(buf);
                 }
-                glDeleteShader(shader);
-                shader = 0;
             }
+            glDeleteShader(shader);
+            shader = 0;
         }
     }
     return shader;
@@ -71,6 +113,7 @@ GLuint createProgram(const char* pVertexSource, const char* pFragmentSource) {
 
     GLuint pixelShader = loadShader(GL_FRAGMENT_SHADER, pFragmentSource);
     if (!pixelShader) {
+        glDeleteShader(vertexShader);
         return 0;
     }
 
@@ -96,6 +139,10 @@ GLuint createProgram(const char* pVertexSource, const char* pFragmentSource) {
             program = 0;
         }
     }
+    // Once linked, the program retains the compiled code. Keeping the attached
+    // shader objects alive leaks GL resources every time an external filter changes.
+    glDeleteShader(vertexShader);
+    glDeleteShader(pixelShader);
     return program;
 }
 
@@ -104,41 +151,302 @@ void Video::updateProgram() {
         return;
     }
 
-    loadedShaderType = requestedShaderConfig;
-
     auto shaders = ShaderManager::getShader(requestedShaderConfig);
+    auto compilePasses = [](const ShaderManager::Chain& chain, std::vector<ShaderChainEntry>& output) {
+        for (size_t passIndex = 0; passIndex < chain.passes.size(); ++passIndex) {
+            const auto& item = chain.passes[passIndex];
+            auto shader = ShaderChainEntry { };
 
-    shadersChain = {};
+            shader.gProgram = createProgram(item.vertex.data(), item.fragment.data());
+            if (!shader.gProgram) {
+                LOGE("Could not create GL program for shader pass %zu.", passIndex);
+                for (const auto& compiledShader : output) {
+                    if (compiledShader.gProgram != 0) glDeleteProgram(compiledShader.gProgram);
+                }
+                output.clear();
+                return false;
+            }
 
-    std::for_each(shaders.passes.begin(), shaders.passes.end(), [&](const auto& item){
-        auto shader = ShaderChainEntry { };
-
-        shader.gProgram = createProgram(item.vertex.data(), item.fragment.data());
-        if (!shader.gProgram) {
-            LOGE("Could not create gl program.");
-            throw std::runtime_error("Cannot create gl program");
+            shader.gvPositionHandle = getAttribLocationWithFallback(
+                shader.gProgram,
+                "vPosition",
+                "aPosition",
+                "a_vertex_coordinate"
+            );
+            shader.gvCoordinateHandle = getAttribLocationWithFallback(
+                shader.gProgram,
+                "vCoordinate",
+                "aTexCoord",
+                "a_texcoord"
+            );
+            shader.gTextureHandle = getUniformLocationWithFallback(
+                shader.gProgram,
+                "texture",
+                "rubyTexture",
+                "sampler0"
+            );
+            shader.gPreviousPassTextureHandle = glGetUniformLocation(shader.gProgram, "previousPass");
+            shader.gTextureSizeHandle = getUniformLocationWithFallback(
+                shader.gProgram,
+                "textureSize",
+                "rubyTextureSize"
+            );
+            shader.gLegacyTextureSizeHandle = glGetUniformLocation(shader.gProgram, "u_texture_size");
+            shader.gInputSizeHandle = glGetUniformLocation(shader.gProgram, "rubyInputSize");
+            shader.gOutputSizeHandle = glGetUniformLocation(shader.gProgram, "rubyOutputSize");
+            shader.gHistoryTexturesHandle = glGetUniformLocation(shader.gProgram, "historyTexture");
+            shader.gAuxiliaryTexturesHandle = glGetUniformLocation(shader.gProgram, "textures");
+            shader.gScreenDensityHandle = glGetUniformLocation(shader.gProgram, "screenDensity");
+            shader.textureCoordinateBias = item.textureCoordinateBias;
+            output.push_back(shader);
         }
 
-        shader.gvPositionHandle = glGetAttribLocation(shader.gProgram, "vPosition");
+        return true;
+    };
 
-        shader.gvCoordinateHandle = glGetAttribLocation(shader.gProgram, "vCoordinate");
+    std::vector<ShaderChainEntry> newShadersChain;
+    if (!compilePasses(shaders, newShadersChain)) {
+        // There is no previous valid chain during first launch. Install the
+        // default shader so an invalid imported filter cannot leave a black screen.
+        if (shadersChain.empty()) {
+            auto fallbackShaders = ShaderManager::getShader({ShaderManager::Type::SHADER_DEFAULT});
+            std::vector<ShaderChainEntry> fallbackChain;
+            if (compilePasses(fallbackShaders, fallbackChain)) {
+                shadersChain = std::move(fallbackChain);
+                activeShaders = fallbackShaders;
+                renderer->setShaders(fallbackShaders);
+                LOGE("External shader failed during startup; using the default shader.");
+            }
+        }
+        // Keep the last valid chain active instead of terminating the app or
+        // recompiling the same invalid source on every frame.
+        loadedShaderType = requestedShaderConfig;
+        return;
+    }
 
-        shader.gTextureHandle = glGetUniformLocation(shader.gProgram, "texture");
+    for (const auto& shader : shadersChain) {
+        if (shader.gProgram != 0) {
+            glDeleteProgram(shader.gProgram);
+        }
+    }
+    shadersChain = std::move(newShadersChain);
+    releaseCustomTextures();
 
-        shader.gPreviousPassTextureHandle = glGetUniformLocation(shader.gProgram, "previousPass");
-
-        shader.gTextureSizeHandle = glGetUniformLocation(shader.gProgram, "textureSize");
-
-        shader.gScreenDensityHandle = glGetUniformLocation(shader.gProgram, "screenDensity");
-
-        shadersChain.push_back(shader);
-    });
+    GLint maxTextureUnits = 1;
+    glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &maxTextureUnits);
+    unsigned int availableTextureUnits = static_cast<unsigned int>(std::max(0, maxTextureUnits - 1));
+    activeHistoryCount = std::min(shaders.historyCount, availableTextureUnits);
+    unsigned int availableAuxiliaryUnits = availableTextureUnits - activeHistoryCount;
+    createAuxiliaryTextures(shaders, availableAuxiliaryUnits);
+    // Pixel payloads are only needed while creating GL textures. Do not copy
+    // them into renderer state or retain duplicate CPU-side image buffers.
+    shaders.auxiliaryTextures.clear();
+    activeShaders = shaders;
 
     renderer->setShaders(shaders);
+    loadedShaderType = requestedShaderConfig;
+}
+
+void Video::releaseCustomTextures() {
+    if (!historyTextures.empty()) {
+        glDeleteTextures(static_cast<GLsizei>(historyTextures.size()), historyTextures.data());
+        historyTextures.clear();
+    }
+    if (!auxiliaryTextures.empty()) {
+        glDeleteTextures(static_cast<GLsizei>(auxiliaryTextures.size()), auxiliaryTextures.data());
+        auxiliaryTextures.clear();
+    }
+    if (historyReadFramebuffer != 0) {
+        glDeleteFramebuffers(1, &historyReadFramebuffer);
+        historyReadFramebuffer = 0;
+    }
+    if (historyCopyProgram != 0) {
+        glDeleteProgram(historyCopyProgram);
+        historyCopyProgram = 0;
+    }
+    historyCopyPositionHandle = -1;
+    historyCopyCoordinateHandle = -1;
+    historyCopyTextureHandle = -1;
+    historyWriteIndex = 0;
+    historyTextureSize = {0, 0};
+    activeHistoryCount = 0;
+}
+
+void Video::createAuxiliaryTextures(
+    const ShaderManager::Chain& shaders,
+    unsigned int maxCount
+) {
+    unsigned int count = std::min(
+        static_cast<unsigned int>(shaders.auxiliaryTextures.size()),
+        maxCount
+    );
+    if (count == 0) return;
+
+    auxiliaryTextures.resize(count);
+    glGenTextures(static_cast<GLsizei>(count), auxiliaryTextures.data());
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+    for (unsigned int i = 0; i < count; ++i) {
+        const auto& source = shaders.auxiliaryTextures[i];
+        size_t requiredBytes = static_cast<size_t>(source.width) * source.height * 4;
+        if (source.width == 0 || source.height == 0 || source.rgba8888.size() < requiredBytes) {
+            continue;
+        }
+
+        glBindTexture(GL_TEXTURE_2D, auxiliaryTextures[i]);
+        glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            GL_RGBA,
+            static_cast<GLsizei>(source.width),
+            static_cast<GLsizei>(source.height),
+            0,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            source.rgba8888.data()
+        );
+        glTexParameteri(
+            GL_TEXTURE_2D,
+            GL_TEXTURE_MIN_FILTER,
+            shaders.linearTexture ? GL_LINEAR : GL_NEAREST
+        );
+        glTexParameteri(
+            GL_TEXTURE_2D,
+            GL_TEXTURE_MAG_FILTER,
+            shaders.linearTexture ? GL_LINEAR : GL_NEAREST
+        );
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+}
+
+void Video::ensureHistoryTextures(unsigned int count) {
+    int width = renderer->textureSize.first;
+    int height = renderer->textureSize.second;
+    if (count == 0 || width <= 0 || height <= 0) return;
+    if (historyTextures.size() == count && historyTextureSize == std::make_pair(width, height)) {
+        return;
+    }
+
+    if (!historyTextures.empty()) {
+        glDeleteTextures(static_cast<GLsizei>(historyTextures.size()), historyTextures.data());
+    }
+    historyTextures.assign(count, 0);
+    glGenTextures(static_cast<GLsizei>(count), historyTextures.data());
+
+    std::vector<unsigned char> emptyFrame(static_cast<size_t>(width) * height * 4, 0);
+    for (GLuint texture : historyTextures) {
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            GL_RGBA,
+            width,
+            height,
+            0,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            emptyFrame.data()
+        );
+        glTexParameteri(
+            GL_TEXTURE_2D,
+            GL_TEXTURE_MIN_FILTER,
+            activeShaders.linearTexture ? GL_LINEAR : GL_NEAREST
+        );
+        glTexParameteri(
+            GL_TEXTURE_2D,
+            GL_TEXTURE_MAG_FILTER,
+            activeShaders.linearTexture ? GL_LINEAR : GL_NEAREST
+        );
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    if (historyReadFramebuffer == 0) {
+        glGenFramebuffers(1, &historyReadFramebuffer);
+    }
+    if (historyCopyProgram == 0) {
+        static const char* copyVertex =
+            "attribute vec2 vPosition;\n"
+            "attribute vec2 vCoordinate;\n"
+            "varying vec2 coords;\n"
+            "void main() {\n"
+            "  gl_Position = vec4(vPosition, 0.0, 1.0);\n"
+            "  coords = vCoordinate;\n"
+            "}\n";
+        static const char* copyFragment =
+            "precision mediump float;\n"
+            "uniform sampler2D texture;\n"
+            "varying vec2 coords;\n"
+            "void main() {\n"
+            "  gl_FragColor = texture2D(texture, coords);\n"
+            "}\n";
+        historyCopyProgram = createProgram(copyVertex, copyFragment);
+        historyCopyPositionHandle = glGetAttribLocation(historyCopyProgram, "vPosition");
+        historyCopyCoordinateHandle = glGetAttribLocation(historyCopyProgram, "vCoordinate");
+        historyCopyTextureHandle = glGetUniformLocation(historyCopyProgram, "texture");
+    }
+    historyTextureSize = {width, height};
+    historyWriteIndex = 0;
+}
+
+void Video::captureCurrentFrameToHistory() {
+    if (historyTextures.empty()) return;
+
+    static const GLfloat vertices[] = {
+        -1.0f, -1.0f,
+        -1.0f,  1.0f,
+         1.0f, -1.0f,
+         1.0f, -1.0f,
+        -1.0f,  1.0f,
+         1.0f,  1.0f,
+    };
+    static const GLfloat coordinates[] = {
+        0.0f, 0.0f,
+        0.0f, 1.0f,
+        1.0f, 0.0f,
+        1.0f, 0.0f,
+        0.0f, 1.0f,
+        1.0f, 1.0f,
+    };
+
+    glBindFramebuffer(GL_FRAMEBUFFER, historyReadFramebuffer);
+    glFramebufferTexture2D(
+        GL_FRAMEBUFFER,
+        GL_COLOR_ATTACHMENT0,
+        GL_TEXTURE_2D,
+        historyTextures[historyWriteIndex],
+        0
+    );
+    glViewport(0, 0, historyTextureSize.first, historyTextureSize.second);
+    glUseProgram(historyCopyProgram);
+
+    glVertexAttribPointer(historyCopyPositionHandle, 2, GL_FLOAT, GL_FALSE, 0, vertices);
+    glEnableVertexAttribArray(historyCopyPositionHandle);
+    glVertexAttribPointer(historyCopyCoordinateHandle, 2, GL_FLOAT, GL_FALSE, 0, coordinates);
+    glEnableVertexAttribArray(historyCopyCoordinateHandle);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(renderer->getTexture()));
+    glUniform1i(historyCopyTextureHandle, 0);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+
+    glDisableVertexAttribArray(historyCopyPositionHandle);
+    glDisableVertexAttribArray(historyCopyCoordinateHandle);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    historyWriteIndex = (historyWriteIndex + 1) % historyTextures.size();
 }
 
 void Video::renderFrame() {
     if (skipDuplicateFrames && !isDirty) return;
+    bool hasNewFrame = isDirty;
     isDirty = false;
 
     glDisable(GL_DEPTH_TEST);
@@ -159,6 +467,7 @@ void Video::renderFrame() {
     }
 
     updateProgram();
+    ensureHistoryTextures(activeHistoryCount);
     for (int i = 0; i < shadersChain.size(); ++i) {
         auto shader = shadersChain[i];
         auto passData = renderer->getPassData(i);
@@ -176,16 +485,72 @@ void Video::renderFrame() {
         glUseProgram(shader.gProgram);
 
         auto vertices = isLastPass ? videoLayout.getForegroundVertices() : videoLayout.getFramebufferVertices();
-        glVertexAttribPointer(shader.gvPositionHandle, 2, GL_FLOAT, GL_FALSE, 0, vertices.data());
-        glEnableVertexAttribArray(shader.gvPositionHandle);
+        if (shader.gvPositionHandle != -1) {
+            glVertexAttribPointer(shader.gvPositionHandle, 2, GL_FLOAT, GL_FALSE, 0, vertices.data());
+            glEnableVertexAttribArray(shader.gvPositionHandle);
+        }
 
         auto coordinates = videoLayout.getTextureCoordinates();
-        glVertexAttribPointer(shader.gvCoordinateHandle, 2, GL_FLOAT, GL_FALSE, 0, coordinates.data());
-        glEnableVertexAttribArray(shader.gvCoordinateHandle);
+        // CMOf stores GLES2 frames in a POT backing texture. Its first pass
+        // only addresses the active image rectangle; later passes address
+        // their complete intermediate framebuffer.
+        if (i == 0 && renderer->textureSize.first > 0 && renderer->textureSize.second > 0) {
+            float scaleX = getTextureWidth() / static_cast<float>(renderer->textureSize.first);
+            float scaleY = getTextureHeight() / static_cast<float>(renderer->textureSize.second);
+            for (size_t coordinate = 0; coordinate < coordinates.size(); coordinate += 2) {
+                coordinates[coordinate] *= scaleX;
+                coordinates[coordinate + 1] *= scaleY;
+            }
+        }
+        if (i == 0 && shader.textureCoordinateBias) {
+            for (size_t coordinate = 0; coordinate < coordinates.size(); coordinate += 2) {
+                coordinates[coordinate] += 0.0001F;
+                coordinates[coordinate + 1] += 0.0001F;
+            }
+        }
+        if (shader.gvCoordinateHandle != -1) {
+            glVertexAttribPointer(shader.gvCoordinateHandle, 2, GL_FLOAT, GL_FALSE, 0, coordinates.data());
+            glEnableVertexAttribArray(shader.gvCoordinateHandle);
+        }
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, renderer->getTexture());
-        glUniform1i(shader.gTextureHandle, 0);
+        if (shader.gTextureHandle != -1) {
+            glUniform1i(shader.gTextureHandle, 0);
+        }
+
+        unsigned int nextTextureUnit = 1;
+        if (shader.gHistoryTexturesHandle != -1 && !historyTextures.empty()) {
+            std::vector<GLint> historyUnits(historyTextures.size());
+            std::iota(historyUnits.begin(), historyUnits.end(), 1);
+            for (size_t history = 0; history < historyTextures.size(); ++history) {
+                size_t textureIndex =
+                    (historyWriteIndex + historyTextures.size() - history - 1) % historyTextures.size();
+                glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(history + 1));
+                glBindTexture(GL_TEXTURE_2D, historyTextures[textureIndex]);
+            }
+            glUniform1iv(
+                shader.gHistoryTexturesHandle,
+                static_cast<GLsizei>(historyUnits.size()),
+                historyUnits.data()
+            );
+        }
+        nextTextureUnit += static_cast<unsigned int>(historyTextures.size());
+
+        if (shader.gAuxiliaryTexturesHandle != -1 && !auxiliaryTextures.empty()) {
+            std::vector<GLint> auxiliaryUnits(auxiliaryTextures.size());
+            for (size_t auxiliary = 0; auxiliary < auxiliaryTextures.size(); ++auxiliary) {
+                unsigned int textureUnit = nextTextureUnit + static_cast<unsigned int>(auxiliary);
+                auxiliaryUnits[auxiliary] = static_cast<GLint>(textureUnit);
+                glActiveTexture(GL_TEXTURE0 + textureUnit);
+                glBindTexture(GL_TEXTURE_2D, auxiliaryTextures[auxiliary]);
+            }
+            glUniform1iv(
+                shader.gAuxiliaryTexturesHandle,
+                static_cast<GLsizei>(auxiliaryUnits.size()),
+                auxiliaryUnits.data()
+            );
+        }
 
         if (shader.gPreviousPassTextureHandle != -1 && passData.texture.has_value()) {
             glActiveTexture(GL_TEXTURE0 + 1);
@@ -193,23 +558,74 @@ void Video::renderFrame() {
             glUniform1i(shader.gPreviousPassTextureHandle, 1);
         }
 
-        glUniform2f(shader.gTextureSizeHandle, getTextureWidth(), getTextureHeight());
+        if (shader.gTextureSizeHandle != -1) {
+            float textureWidth = renderer->textureSize.first > 0
+                ? static_cast<float>(renderer->textureSize.first)
+                : getTextureWidth();
+            float textureHeight = renderer->textureSize.second > 0
+                ? static_cast<float>(renderer->textureSize.second)
+                : getTextureHeight();
+            glUniform2f(shader.gTextureSizeHandle, textureWidth, textureHeight);
+        }
 
-        glUniform1f(shader.gScreenDensityHandle, getScreenDensity());
+        if (shader.gLegacyTextureSizeHandle != -1) {
+            float textureWidth = renderer->textureSize.first > 0
+                ? static_cast<float>(renderer->textureSize.first)
+                : getTextureWidth();
+            float textureHeight = renderer->textureSize.second > 0
+                ? static_cast<float>(renderer->textureSize.second)
+                : getTextureHeight();
+            glUniform4f(
+                shader.gLegacyTextureSizeHandle,
+                textureWidth,
+                textureHeight,
+                1.0f / textureWidth,
+                1.0f / textureHeight
+            );
+        }
+
+        if (shader.gInputSizeHandle != -1) {
+            glUniform2f(shader.gInputSizeHandle, getTextureWidth(), getTextureHeight());
+        }
+
+        if (shader.gOutputSizeHandle != -1) {
+            auto bounds = videoLayout.getRelativeForegroundBounds();
+            float outputWidth = (bounds[2] - bounds[0]) * static_cast<float>(videoLayout.getScreenWidth());
+            float outputHeight = (bounds[3] - bounds[1]) * static_cast<float>(videoLayout.getScreenHeight());
+            glUniform2f(shader.gOutputSizeHandle, outputWidth, outputHeight);
+        }
+
+        if (shader.gScreenDensityHandle != -1) {
+            glUniform1f(shader.gScreenDensityHandle, getScreenDensity());
+        }
 
         glDrawArrays(GL_TRIANGLES, 0, 6);
 
-        glDisableVertexAttribArray(shader.gvPositionHandle);
-        glDisableVertexAttribArray(shader.gvCoordinateHandle);
+        if (shader.gvPositionHandle != -1) {
+            glDisableVertexAttribArray(shader.gvPositionHandle);
+        }
+        if (shader.gvCoordinateHandle != -1) {
+            glDisableVertexAttribArray(shader.gvCoordinateHandle);
+        }
 
         if (shader.gPreviousPassTextureHandle != -1 && passData.texture.has_value()) {
             glActiveTexture(GL_TEXTURE0 + 1);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+        for (unsigned int textureUnit = 1;
+             textureUnit < nextTextureUnit + auxiliaryTextures.size();
+             ++textureUnit) {
+            glActiveTexture(GL_TEXTURE0 + textureUnit);
             glBindTexture(GL_TEXTURE_2D, 0);
         }
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, 0);
 
         glUseProgram(0);
+    }
+
+    if (hasNewFrame) {
+        captureCurrentFrameToHistory();
     }
 }
 
@@ -240,10 +656,6 @@ void Video::updateViewportSize(Rect viewportRect) {
     videoLayout.updateViewportSize(viewportRect);
 }
 
-void Video::updateViewportAlignment(unsigned int viewportAlignment) {
-    videoLayout.updateViewportAlignment(viewportAlignment);
-}
-
 void Video::updateRendererSize(unsigned int width, unsigned int height) {
     LOGD("Updating renderer size: %d x %d", width, height);
     renderer->updateRenderedResolution(width, height);
@@ -261,14 +673,13 @@ Video::Video(
     bool skipDuplicateFrames,
     bool immersiveModeEnabled,
     Rect viewportRect,
-    ImmersiveMode::Config immersiveModeConfig,
-    unsigned int viewportAlignment
+    ImmersiveMode::Config immersiveModeConfig
 ) :
     requestedShaderConfig(std::move(shaderConfig)),
     skipDuplicateFrames(skipDuplicateFrames),
     immersiveModeEnabled(immersiveModeEnabled),
     immersiveMode(immersiveModeConfig),
-    videoLayout(bottomLeftOrigin, rotation, viewportRect, viewportAlignment) {
+    videoLayout(bottomLeftOrigin, rotation, viewportRect) {
 
     printGLString("Version", GL_VERSION);
     printGLString("Vendor", GL_VENDOR);
@@ -285,6 +696,18 @@ Video::Video(
     initializeRenderer(renderingOptions);
 }
 
+Video::~Video() {
+    releaseCustomTextures();
+    for (auto& shader : shadersChain) {
+        if (shader.gProgram != 0) {
+            glDeleteProgram(shader.gProgram);
+            shader.gProgram = 0;
+        }
+    }
+    shadersChain.clear();
+    renderer.reset();
+}
+
 void Video::updateShaderType(ShaderManager::Config shaderConfig) {
     requestedShaderConfig = std::move(shaderConfig);
 }
@@ -293,7 +716,7 @@ void Video::initializeRenderer(RenderingOptions renderingOptions) {
     auto shaders = ShaderManager::getShader(requestedShaderConfig);
 
     if (renderingOptions.hardwareAccelerated) {
-        renderer = new FramebufferRenderer(
+        renderer = std::make_unique<FramebufferRenderer>(
             renderingOptions.width,
             renderingOptions.height,
             renderingOptions.useDepth,
@@ -302,9 +725,9 @@ void Video::initializeRenderer(RenderingOptions renderingOptions) {
         );
     } else {
         if (renderingOptions.openglESVersion >= 3) {
-            renderer = new ImageRendererES3();
+            renderer = std::make_unique<ImageRendererES3>();
         } else {
-            renderer = new ImageRendererES2();
+            renderer = std::make_unique<ImageRendererES2>();
         }
     }
 

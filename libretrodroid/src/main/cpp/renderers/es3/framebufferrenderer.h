@@ -35,6 +35,7 @@ public:
         bool stencil,
         ShaderManager::Chain shaders
     );
+    ~FramebufferRenderer() override;
     uintptr_t getTexture() override;
     uintptr_t getFramebuffer() override;
     void onNewFrame(const void *data, unsigned width, unsigned height, size_t pitch) override;

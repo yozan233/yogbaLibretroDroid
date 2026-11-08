@@ -17,6 +17,25 @@
 
 package com.swordfish.libretrodroid
 
+class CustomShaderTexture(
+    val width: Int,
+    val height: Int,
+    val rgba8888: ByteArray
+) {
+    override fun equals(other: Any?): Boolean =
+        other is CustomShaderTexture &&
+            width == other.width &&
+            height == other.height &&
+            rgba8888.contentEquals(other.rgba8888)
+
+    override fun hashCode(): Int {
+        var result = width
+        result = 31 * result + height
+        result = 31 * result + rgba8888.contentHashCode()
+        return result
+    }
+}
+
 sealed interface ShaderConfig {
 
     object Default : ShaderConfig
@@ -62,4 +81,17 @@ sealed interface ShaderConfig {
         val hardEdgesSearchMaxError: Float = 0.25f,
         val hardEdgesSearchMaxDistance: Int = 4,
     ) : ShaderConfig
+
+    data class Custom(
+        val vertex: String,
+        val fragment: String,
+        val linearTexture: Boolean = false,
+        val scale: Float = 1.0f,
+        val repeatSourceTexture: Boolean = false,
+        val historyCount: Int = 0,
+        val textures: List<CustomShaderTexture> = emptyList(),
+        val useIntermediateFramebuffer: Boolean = scale != 1.0f
+    ) : ShaderConfig
+
+
 }

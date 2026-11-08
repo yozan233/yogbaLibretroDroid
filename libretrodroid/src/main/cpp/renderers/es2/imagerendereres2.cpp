@@ -18,11 +18,20 @@
 #include "imagerendereres2.h"
 #include "../../libretro-common/include/libretro.h"
 
+#include <vector>
+
 namespace libretrodroid {
 
 ImageRendererES2::ImageRendererES2() {
     glGenTextures(1, &currentTexture);
     glBindTexture(GL_TEXTURE_2D, currentTexture);
+}
+
+ImageRendererES2::~ImageRendererES2() {
+    if (currentTexture != 0) {
+        glDeleteTextures(1, &currentTexture);
+        currentTexture = 0;
+    }
 }
 
 void ImageRendererES2::onNewFrame(const void *data, unsigned width, unsigned height, size_t pitch) {
@@ -38,11 +47,35 @@ void ImageRendererES2::onNewFrame(const void *data, unsigned width, unsigned hei
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, linear ? GL_LINEAR : GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, linear ? GL_LINEAR : GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, repeatSourceTexture ? GL_REPEAT : GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, repeatSourceTexture ? GL_REPEAT : GL_CLAMP_TO_EDGE);
 
-    if (lastFrameSize.first != width || lastFrameSize.second != height) {
-        glTexImage2D(GL_TEXTURE_2D, 0, glInternalFormat, width, height, 0, glFormat, glType, nullptr);
+    if (lastFrameSize.first != width || lastFrameSize.second != height || isDirty) {
+        unsigned int textureWidth = repeatSourceTexture ? nextPowerOfTwo(width) : width;
+        unsigned int textureHeight = repeatSourceTexture ? nextPowerOfTwo(height) : height;
+        textureSize = std::make_pair(textureWidth, textureHeight);
+
+        // CMOf uses a power-of-two backing texture on GLES2 and uploads the
+        // real frame into its top-left sub-rectangle. Zero the unused area so
+        // samples near the active image boundary are deterministic.
+        std::vector<unsigned char> emptyTexture;
+        const void* initialData = nullptr;
+        if (textureWidth != width || textureHeight != height) {
+            emptyTexture.resize(textureWidth * textureHeight * bytesPerPixel, 0);
+            initialData = emptyTexture.data();
+        }
+        glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            glInternalFormat,
+            textureWidth,
+            textureHeight,
+            0,
+            glFormat,
+            glType,
+            initialData
+        );
+        isDirty = false;
     }
 
     // If the given texture has the correct size we just upload it.
@@ -120,6 +153,16 @@ bool ImageRendererES2::rendersInVideoCallback() {
 
 void ImageRendererES2::setShaders(ShaderManager::Chain shaders) {
     this->linear = shaders.linearTexture;
+    this->repeatSourceTexture = shaders.repeatSourceTexture;
+    this->isDirty = true;
+}
+
+unsigned int ImageRendererES2::nextPowerOfTwo(unsigned int value) {
+    unsigned int result = 1;
+    while (result < value) {
+        result <<= 1;
+    }
+    return result;
 }
 
 // ES2 Renderer doesn't currently support multiple passes.

@@ -32,6 +32,7 @@ namespace libretrodroid {
 class ImageRendererES2: public Renderer {
 public:
     explicit ImageRendererES2();
+    ~ImageRendererES2() override;
     uintptr_t getTexture() override;
     uintptr_t getFramebuffer() override;
     void onNewFrame(const void *data, unsigned width, unsigned height, size_t pitch) override;
@@ -44,6 +45,7 @@ public:
     PassData getPassData(unsigned int layer) override;
 
 private:
+    static unsigned int nextPowerOfTwo(unsigned int value);
     void convertDataFromRGB8888(const void* pixelData, size_t size);
     void convertDataFrom0RGB1555(const void *data, unsigned int width, unsigned int height, size_t pitch) const;
 
@@ -55,6 +57,8 @@ private:
     unsigned int glFormat = 0;
 
     bool linear = false;
+    bool repeatSourceTexture = false;
+    bool isDirty = true;
 
     unsigned int currentTexture = 0;
 };

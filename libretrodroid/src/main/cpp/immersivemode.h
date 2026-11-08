@@ -62,6 +62,7 @@ public:
         blurSkipUpdate(config.blurSkipUpdate > 0 ? config.blurSkipUpdate : 1),
         blendFactor(config.blendFactor)
     {}
+    ~ImmersiveMode();
 
     void renderBackground(
         unsigned screenWidth,

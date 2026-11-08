@@ -50,6 +50,9 @@ public:
 
 public:
     std::pair<int, int> lastFrameSize;
+    // Actual GL texture allocation. This differs from lastFrameSize only on
+    // the GLES2 CMOf-compatibility path, where NPOT textures cannot repeat.
+    std::pair<int, int> textureSize;
 };
 
 }

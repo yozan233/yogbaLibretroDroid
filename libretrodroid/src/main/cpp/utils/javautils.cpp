@@ -93,13 +93,41 @@ ShaderManager::Config JavaUtils::shaderFromJava(JNIEnv *env, jobject obj) {
 
     jfieldID jTypeField = env->GetFieldID(jShaderClass, "type", "I");
     jfieldID jParamsField = env->GetFieldID(jShaderClass, "params", "Ljava/util/Map;");
+    jfieldID jTexturesField = env->GetFieldID(jShaderClass, "textures", "Ljava/util/List;");
 
     jobject jParams = env->GetObjectField(obj, jParamsField);
+    jobject jTextures = env->GetObjectField(obj, jTexturesField);
 
     int type = env->GetIntField(obj, jTypeField);
     std::unordered_map<std::string, std::string> params = stringMapFromJava(env, jParams);
+    std::vector<ShaderManager::AuxiliaryTexture> textures;
 
-    return ShaderManager::Config { ShaderManager::Type(type), params };
+    forEachOnJavaIterable(env, jTextures, [&](jobject jTexture) {
+        jclass jTextureClass = env->GetObjectClass(jTexture);
+        jfieldID jWidthField = env->GetFieldID(jTextureClass, "width", "I");
+        jfieldID jHeightField = env->GetFieldID(jTextureClass, "height", "I");
+        jfieldID jPixelsField = env->GetFieldID(jTextureClass, "rgba8888", "[B");
+
+        auto width = static_cast<unsigned int>(env->GetIntField(jTexture, jWidthField));
+        auto height = static_cast<unsigned int>(env->GetIntField(jTexture, jHeightField));
+        auto jPixels = static_cast<jbyteArray>(env->GetObjectField(jTexture, jPixelsField));
+        jsize pixelCount = env->GetArrayLength(jPixels);
+
+        std::vector<unsigned char> pixels(static_cast<size_t>(pixelCount));
+        env->GetByteArrayRegion(
+            jPixels,
+            0,
+            pixelCount,
+            reinterpret_cast<jbyte*>(pixels.data())
+        );
+        textures.push_back({width, height, std::move(pixels)});
+
+        env->DeleteLocalRef(jPixels);
+        env->DeleteLocalRef(jTextureClass);
+        env->DeleteLocalRef(jTexture);
+    });
+
+    return ShaderManager::Config { ShaderManager::Type(type), params, std::move(textures) };
 }
 
 } //namespace libretrodroid

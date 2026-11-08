@@ -17,11 +17,21 @@
 
 #include <cmath>
 #include <algorithm>
+#include <cstring>
 #include "linearresampler.h"
 
 namespace libretrodroid {
 
 void LinearResampler::resample(const int16_t *source, int32_t inputFrames, int16_t *sink, int32_t sinkFrames) {
+    if (sinkFrames <= 0) {
+        return;
+    }
+
+    if (inputFrames <= 0 || source == nullptr) {
+        memset(sink, 0, sizeof(int16_t) * static_cast<size_t>(sinkFrames) * 2);
+        return;
+    }
+
     double outputTime = 0;
     double outputTimeStep = 1.0 / sinkFrames;
 

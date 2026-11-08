@@ -26,19 +26,14 @@ class GLRetroViewData(context: Context) {
     var gameVirtualFiles: List<VirtualFile> = listOf()
     var systemDirectory: String = context.filesDir.absolutePath
     var savesDirectory: String = context.filesDir.absolutePath
-    var variables: Array<Variable> = arrayOf()
+    var variables: ArrayList<Variable> = arrayListOf()
     var saveRAMState: ByteArray? = null
     var shader: ShaderConfig = ShaderConfig.Default
-    var viewportAlignment = ViewportAlignment.CENTER
     var rumbleEventsEnabled: Boolean = true
     var preferLowLatencyAudio: Boolean = true
     var skipDuplicateFrames: Boolean = false
     var enableMicrophone: Boolean = false
     var immersiveMode: ImmersiveMode? = null
-}
-
-enum class ViewportAlignment(val value: Int) {
-    CENTER(0),
-    TOP(1),
-    BOTTOM(2)
+    var hardware:Int = LibretroDroid.HW_FLAG_RTC
+    var savetype:Int = LibretroDroid.SAVEDATA_TYPE_AUTODETECT
 }
