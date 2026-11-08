@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#081b2d">
+  <meta name="description" content="yoGBA is a GBA emulator for Android powered by mGBA, featuring save states, fast-forward, customizable controls, rendering effects, and multiplayer.">
+  <meta property="og:type" content="website">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:title" content="yoGBA">
+  <meta property="og:description" content="Enjoy GBA games on Android">
+  <meta property="og:image" content="img/logo_yogba.png">
+  <link rel="icon" type="image/x-icon" sizes="16x16" href="img/favicon.ico">
+  <title>yoGBA</title>
+  <link href="css/main.css" rel="stylesheet">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container hero-content">
+      <img class="app-logo" src="img/logo_yogba.png" alt="yoGBA icon" width="112" height="112">
+      <h1 style="margin-top: 40px;">yoGBA</h1>
+      <p class="hero-description">An easy-to-use GBA emulator</p>
+      <div class="download-area">
+        <div class="download-row">
+          <div id="btn-download">
+            <div id="apk-download"><span id="download-text">Download</span><span id="app-version"></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="section features" id="features" aria-labelledby="features-title">
+      <div class="container">
+        <div class="section-heading">
+          <h2 id="features-title">Features</h2>
+        </div>
+        <div class="feature-grid">
+          <article class="feature">
+            <h3>mGBA Core</h3>
+            <p>Built on the advanced <a style="color: #6A37BC;" href="https://mgba.io" target="_blank">mGBA</a> core for excellent game compatibility. Run almost any GBA game with ease, and share save states with the desktop version of mGBA.</p>
+          </article>
+          <article class="feature">
+            <h3>Fast-forward with Normal-speed Audio</h3>
+            <p>Speed up your gameplay while keeping audio at its normal playback speed. Enjoy faster progress without speeding up the original game audio, for a more comfortable and natural experience.</p>
+          </article>
+          <article class="feature">
+            <h3>Load Games with Ease</h3>
+            <p>A clean, intuitive, and thoughtfully designed interface. Load ROMs directly from ZIP, RAR, and 7z archives.</p>
+          </article>
+          <article class="feature">
+            <h3>Controls Your Way</h3>
+            <p>Customize the position, size, and style of on-screen buttons, map physical controllers, and add your own background images.</p>
+          </article>
+          <article class="feature">
+            <h3>Handy Built-in Tools</h3>
+            <p>Take screenshots, use cheat codes, and inspect game state with tools built right into the app.</p>
+          </article>
+          <article class="feature">
+            <h3>Play with Friends</h3>
+            <p>Connect locally or remotely to enjoy more ways to play games that support multiplayer.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="notice" id="notice" aria-labelledby="notice-title">
+      <div class="container notice-inner">
+        <h2 id="notice-title">Usage &amp; Copyright</h2>
+        <div>
+          <p>yoGBA does not provide or include any games or ROMs. Please use only game files you have the right to use.</p>
+          <p>This app supports GBA game files only. Game Boy and Game Boy Color game files are not supported.</p>
+          <p>This app is not affiliated with Nintendo or any of its affiliates or subsidiaries, and is not authorized, endorsed, or licensed by them. References to Game Boy Advance, Game Boy, and Game Boy Color are used solely to describe game compatibility. All related names and trademarks belong to their respective owners.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script>
+    var appUpdateInfo = {};
+
+    window.addEventListener('load', function () {
+        requestAppUpdateInfo((data) => {
+            displayAppUnfo(data);
+            initDownloadButton();
+        });
+    });
+
+    function requestAppUpdateInfo(callback){
+        if(appUpdateInfo.versionName){
+            callback(appUpdateInfo);
+            return;
+        }
+        if(parent.appUpdateInfo){
+            appUpdateInfo = parent.appUpdateInfo;
+        }
+        if(appUpdateInfo.versionName){
+            callback(appUpdateInfo);
+            return;
+        }
+
+        fetch('update_info.json')
+            .then(response => response.json())
+            .then(data => {
+                appUpdateInfo = data;
+                parent.appUpdateInfo = data;
+                callback(appUpdateInfo);
+            });
+    }
+
+    function displayAppUnfo(data){
+        document.getElementById('app-version').innerText = data.versionName;
+    }
+
+    function initDownloadButton(){
+        let apkDownload = document.getElementById('apk-download');
+        apkDownload.addEventListener('click', function(){
+          let apkUrl = appUpdateInfo.apkUrl;
+          if (apkUrl) {
+              let link = document.createElement('a');
+              link.href = apkUrl;
+              link.click();
+          }
+
+
+        });
+
+    }
+
+
+  </script>
+</body>
+</html>
