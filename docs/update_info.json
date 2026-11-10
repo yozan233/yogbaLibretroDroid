@@ -1,7 +1,7 @@
 {
-    "content": "1. 优化游戏音频兼容\n2. 兼容大文件游戏\n3. 自定义背景改为独立布局设置",
-    "versionCode": 1820,
-    "versionName": "1.8.2",
-    "md5": "cac2d3b2f387788b3eca1127a41a464f",
-    "apkUrl": "https://github.com/yozan233/yogbaLibretroDroid/releases/download/v1.8.2/yoGBA_v1.8.2.apk"
+    "content": "1. Optimize custom background settings\n2. Optimize game audio compatibility\n3. Added the function of importing archive files\n4. Supports 512K battery backup\n5. Added rewind function\n6. Added support for multiple languages",
+    "versionCode": 1830,
+    "versionName": "1.8.3",
+    "md5": "6ab9f670d5f7044f26c187645a621407",
+    "apkUrl": "https://github.com/yozan233/yogbaLibretroDroid/releases/download/v1.8.3/yoGBA_v1.8.3.apk"
 }
