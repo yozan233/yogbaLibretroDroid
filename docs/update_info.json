@@ -1,7 +1,7 @@
 {
-    "content": "1. Optimize custom background settings\n2. Optimize game audio compatibility\n3. Added the function of importing archive files\n4. Supports 512K battery backup\n5. Added rewind function\n6. Added support for multiple languages",
-    "versionCode": 1830,
-    "versionName": "1.8.3",
-    "md5": "6ab9f670d5f7044f26c187645a621407",
-    "apkUrl": "https://github.com/yozan233/yogbaLibretroDroid/releases/download/v1.8.3/yoGBA_v1.8.3.apk"
+    "content": "1. Improved frame pacing at higher emulation speeds.\n2. Added support for external GXA audio packs.\n3. Improved cartridge features, including rumble and gyroscope support.\n4. Improved button vibration feedback.\n5. Improved game audio compatibility.",
+    "versionCode": 1850,
+    "versionName": "1.8.5",
+    "md5": "277b6d8db94d08528f86f984de436233",
+    "apkUrl": "https://github.com/yozan233/yogbaLibretroDroid/releases/download/v1.8.5/yoGBA_v1.8.5.apk"
 }
